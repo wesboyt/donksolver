@@ -1,0 +1,69 @@
+[build-system]
+requires = ["scikit-build-core>=0.10"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "donksolver"
+version = "0.1.0"
+description = "Tabular Monte Carlo CFR solver for no-limit hold'em, with frozen policy bundles and a batch action server"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+keywords = ["poker", "holdem", "cfr", "mccfr", "solver", "game-theory"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: C++",
+    "Programming Language :: Python :: 3",
+    "Topic :: Games/Entertainment",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = ["numpy"]
+
+[project.optional-dependencies]
+# pokerfast is an independent hold'em engine and evaluator. The differential
+# audits compare the native core against it, and `donksolver.engine` adapts its
+# hands to the action server. The solver itself does not import it.
+pokerfast = ["pokerfast>=0.2.0"]
+test = ["pokerfast>=0.2.0", "pytest>=7"]
+
+[project.scripts]
+donksolver = "donksolver.cli:main"
+
+[project.urls]
+Source = "https://github.com/wesboyt/donksolver"
+Issues = "https://github.com/wesboyt/donksolver/issues"
+
+[tool.scikit-build]
+minimum-version = "build-system.requires"
+cmake.version = ">=3.15"
+cmake.source-dir = "native"
+cmake.build-type = "Release"
+wheel.packages = ["src/donksolver"]
+# The native library is loaded with ctypes and never links libpython, so one
+# wheel per OS/CPU serves every CPython (free-threaded included) and PyPy:
+# tag it py3-none-<platform> instead of cpXY-cpXY-<platform>.
+wheel.py-api = "py3"
+sdist.exclude = ["dist", "wheelhouse", "artifacts", "runs", ".github"]
+wheel.license-files = ["LICENSE"]
+
+[tool.cibuildwheel]
+# py3-none wheels are Python-independent: build each platform ONCE.
+build = "cp312-*"
+skip = ["*-musllinux_i686", "*-manylinux_i686", "*-win32"]
+test-extras = ["test"]
+# The wheel is installed and the audits run against it. The slow convergence
+# audit runs in the `tests` workflow instead.
+test-command = "pytest -q -m \"not slow\" {project}/tests"
+environment = { DONKSOLVER_TEST_INSTALLED = "1" }
+
+[tool.cibuildwheel.macos]
+# The earliest macOS each architecture supports well; widens compatibility.
+environment = { DONKSOLVER_TEST_INSTALLED = "1", MACOSX_DEPLOYMENT_TARGET = "10.13" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = ["slow: solver convergence on the validation games (about a minute)"]

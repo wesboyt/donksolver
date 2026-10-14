@@ -1,0 +1,46 @@
+name: tests
+
+# Fast feedback across Python versions: install from source (compiling the
+# native core with the runner's own toolchain) and run every audit, the slow
+# convergence audit included, against the INSTALLED package. The release wheels
+# are built and tested separately, by publish.yml, on every platform they ship
+# for.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.9", "3.12", "3.14", "3.14t"]
+        exclude:
+          # macos-latest is arm64, which has no Python 3.9 toolcache build to rely on
+          - { os: macos-latest, python-version: "3.9" }
+
+    env:
+      DONKSOLVER_TEST_INSTALLED: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ".[test]"
+
+      - name: Test
+        run: python -m pytest -ra -q
