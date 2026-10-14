@@ -4,8 +4,16 @@ Leduc (2 and 3 players) after a short solve, so sigma is far from uniform. The
 deals are enumerable, so for every table entry both the exact mean E[inc] and
 the exact second moment E[inc^2] are computed; the mean of N sampled deals is
 then tested with its TRUE standard error sqrt(Var/N) -- no variance estimate,
-so rare-deal entries cannot inflate the statistic. Pass if sum z^2 matches its
-degrees of freedom and no |z| is extreme (Bonferroni over entries).
+so rare-deal entries cannot inflate the statistic. Pass if no |z| is extreme
+(Bonferroni over entries, valid under any dependence) and chi2/df = mean z^2
+stays below 2.
+
+chi2/df is NOT compared with a chi-square quantile: entries share deals, so
+the z are dependent and the statistic is far wider than chi-square. Measured
+on Leduc 3p seat 0 over six sampling seeds it ranges 0.87-1.42 with mean 1.0,
+and it does not grow at 4x the samples (0.98, 0.87). A bias of b standard
+deviations per entry adds N*b^2, so at N = 400k the bound of 2 still detects
+b > 0.0016.
 control: dropping the opponent reach factor q must be rejected by the same test.
 """
 import math
@@ -42,11 +50,11 @@ def main():
             zmax, ratio, zc, df, zb = test(exact, s2, sampled, n)
             bonf = math.sqrt(2) * math.sqrt(math.log(df / 0.001 * 2 / math.pi))  # ~ normal quantile at 0.001/df
             T.check("leduc%d seat %d: sampled regret unbiased" % (players, player),
-                    zc < 4 and zmax < max(bonf, 4.5) and zb == 0,
+                    ratio < 2.0 and zmax < max(bonf, 4.5) and zb == 0,
                     "entries=%d chi2/df=%.3f z_chi=%.2f max|z|=%.2f (bound %.2f)" % (df, ratio, zc, zmax, bonf))
             broken = s.debug_regret(player, exact=True, broken=True)
             zmax_b, ratio_b, zc_b, _, _ = test(broken, s2, sampled, n)
-            T.control("leduc%d seat %d: missing opponent reach rejected" % (players, player), zc_b > 10,
+            T.control("leduc%d seat %d: missing opponent reach rejected" % (players, player), ratio_b > 100,
                       "chi2/df=%.1f max|z|=%.1f" % (ratio_b, zmax_b))
 
 

@@ -57,6 +57,11 @@ _sig("ds_settle", None, C.c_int, c_i64p, c_u8p, c_u32p, C.c_int, C.c_int, C.c_do
 _sig("ds_replay", C.c_int, C.c_int, c_i64p, C.c_int64, C.c_int64, c_i32p, c_i32p, c_i64p, C.c_int,
      c_i64p, c_i64p)
 _sig("ds_abs_build", C.c_void_p, C.c_int, C.c_int, C.c_int, C.c_int, C.c_uint64, C.c_uint64, PROGRESS)
+_sig("ds_abs_build_nested", C.c_void_p, C.c_int, C.c_int, C.c_int, C.c_int, C.c_int, C.c_int, C.c_int, C.c_int,
+     PROGRESS)
+_sig("ds_abs_params", C.c_int, C.c_void_p, c_i32p)
+_sig("ds_board_class", C.c_int, C.c_int, c_i32p, C.c_int)
+_sig("ds_abs_debug_nested", C.c_int, C.c_void_p, C.c_int, c_i32p, c_dblp, c_dblp, c_i32p)
 _sig("ds_abs_load", C.c_void_p, C.c_char_p)
 _sig("ds_abs_save", C.c_int, C.c_void_p, C.c_char_p)
 _sig("ds_abs_free", None, C.c_void_p)

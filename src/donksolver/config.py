@@ -32,7 +32,7 @@ class Game:
     kappa_bet: float = 0.9          # a bet committing >= this share of the stack is left to the all-in
     allin: str = "always"           # always | threshold | never
     kappa_ai: float = 1.5
-    postflop_max_players: int = 2   # more see the flop -> check-down leaf (not served)
+    postflop_max_players: int = 2   # more see the flop -> check-down leaf (not served); = players: none
     buckets: List[int] = field(default_factory=lambda: [169, 50, 50, 50])
 
     def text(self):
@@ -106,6 +106,13 @@ def preset(name: str, stack_bb: float = 100.0, abstraction_buckets=(50, 50, 50))
                     menus=[[[0.6], [1.0], [0.9]], [[0.5]], [[0.66]], [[0.75]]],
                     max_raises=[3, 2, 2, 2], mw_max_raises=[3, 1, 1, 1],
                     postflop_max_players=2)
+    if name == "6max-mw":
+        # 6max-lite with every flop played out, however many players see it.
+        # About 10x the table of 6max-lite: size it before solving.
+        return Game(players=6, stack_bb=stack_bb, buckets=b,
+                    menus=[[[0.6], [1.0], [0.9]], [[0.5]], [[0.66]], [[0.75]]],
+                    max_raises=[3, 2, 2, 2], mw_max_raises=[3, 1, 1, 1],
+                    postflop_max_players=6)
     if name == "6max":
         return Game(players=6, stack_bb=stack_bb, buckets=b,
                     menus=[[[0.6], [0.9], [0.8]], [[0.33, 0.75], [0.8]], [[0.5, 1.0], [0.8]], [[0.5, 1.0], [0.8]]],

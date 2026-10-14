@@ -1,6 +1,7 @@
 """donksolver command line.
 
   donksolver abstraction --buckets 50,50,50 --threads 2 --out abs.dab
+  donksolver abstraction --kind nested --buckets 12,12,24 --sub 4 --out nested.dab
   donksolver size --preset 6max-lite --stack-bb 100
   donksolver solve --preset 6max-lite --stack-bb 100 --abstraction abs.dab \
         --iterations 50000000 --threads 2 --out runs/6max_100
@@ -32,14 +33,22 @@ def cmd_abstraction(a):
             print("%7.1fs %s %.3f" % (time.time() - t0, stage, frac), flush=True)
 
     b = _ints(a.buckets)
-    ab = Abstraction.build(b, threads=a.threads, river_boards=a.river_boards, seed=a.seed, progress=prog)
+    ab = Abstraction.build(b, threads=a.threads, river_boards=a.river_boards, seed=a.seed, progress=prog,
+                           kind=a.kind, sub=a.sub, boards=tuple(a.boards.split(",")) if "," in a.boards else a.boards)
     ab.save(a.out)
     print("saved %s buckets=%s hash=%016x (%.1fs)" % (a.out, ab.buckets, ab.hash, time.time() - t0))
 
 
 def _game(a):
-    buckets = _ints(a.buckets) if a.buckets else [50, 50, 50]
+    if a.buckets:
+        buckets = _ints(a.buckets)
+    elif getattr(a, "abstraction", None):
+        buckets = Abstraction.load(a.abstraction).buckets[1:]
+    else:
+        buckets = [50, 50, 50]
     g = cfg.preset(a.preset, a.stack_bb, buckets)
+    if a.postflop_max_players is not None:
+        g.postflop_max_players = a.postflop_max_players
     if a.rake_cap is not None:
         g.rake_cap = a.rake_cap
     return g
@@ -92,6 +101,10 @@ def main(argv=None):
     p.add_argument("--threads", type=int, default=2)
     p.add_argument("--river-boards", type=int, default=20000)
     p.add_argument("--seed", type=int, default=1)
+    p.add_argument("--kind", default="percentile", choices=["percentile", "nested"])
+    p.add_argument("--sub", type=int, default=4, help="nested: potential sub-bins per equity bin")
+    p.add_argument("--boards", default="none",
+                   help="nested: board class, one value or flop,turn,river (none | suits | texture)")
     p.add_argument("--out", required=True)
     p.set_defaults(fn=cmd_abstraction)
 
@@ -101,6 +114,10 @@ def main(argv=None):
         p.add_argument("--stack-bb", type=float, default=100.0)
         p.add_argument("--buckets", default="")
         p.add_argument("--rake-cap", type=int, default=None)
+        p.add_argument("--postflop-max-players", type=int, default=None,
+                       help="players that may see a flop before the tree ends in a check-down")
+        if name == "size":
+            p.add_argument("--abstraction", default=None, help="read the bucket counts from this file")
         if name == "solve":
             p.add_argument("--abstraction", required=True)
             p.add_argument("--iterations", type=int, required=True)

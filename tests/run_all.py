@@ -18,11 +18,13 @@ AUDITS = [
     "audit_payoff.py",
     "audit_deal_law.py",
     "audit_abstraction.py",
+    "audit_nested.py",
     "audit_cs_regret.py",
     "audit_average.py",
     "audit_convergence.py",
     "audit_translation.py",
     "audit_serving.py",
+    "audit_multiway.py",
 ]
 SLOW = ("audit_convergence.py",)
 

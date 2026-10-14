@@ -252,6 +252,39 @@ DONK_API void* ds_abs_build(int nbf, int nbt, int nbr, int threads, uint64_t riv
     return a;
     GUARD_END(nullptr)
 }
+// kind 1 (nested): nf/nt/nr equity bins, sub potential sub-bins, board class
+// mode per street (0 none, 1 suits, 2 texture).
+DONK_API void* ds_abs_build_nested(int nf, int nt, int nr, int sub, int bf, int bt, int br, int threads,
+                                   void (*progress)(const char*, double)) {
+    GUARD_BEGIN
+    auto a = std::unique_ptr<Abstraction>(new Abstraction());
+    std::function<void(const char*, double)> pf;
+    if (progress) pf = progress;
+    a->build_nested(nf, nt, nr, sub, bf, bt, br, threads, pf);
+    return a.release();
+    GUARD_END(nullptr)
+}
+// out: [kind, sub, bins flop/turn/river, board mode flop/turn/river]
+DONK_API int ds_abs_params(void* h, int32_t* out8) {
+    auto* a = static_cast<Abstraction*>(h);
+    out8[0] = a->kind; out8[1] = a->sub;
+    for (int s = 1; s < 4; ++s) { out8[1 + s] = a->nbin[s]; out8[4 + s] = a->bmode[s]; }
+    return 1;
+}
+DONK_API int ds_board_class(int mode, const int32_t* board, int n) {
+    int bd[5] = {0, 0, 0, 0, 0};
+    for (int i = 0; i < n && i < 5; ++i) bd[i] = board[i];
+    return board_class(mode, bd, n);
+}
+DONK_API int ds_abs_debug_nested(void* h, int n, const int32_t* board, double* e1, double* e2, int32_t* tab) {
+    GUARD_BEGIN
+    auto* a = static_cast<Abstraction*>(h);
+    if (a->kind != ABS_NESTED) throw std::runtime_error("not a nested abstraction");
+    int bd[5] = {0, 0, 0, 0, 0};
+    for (int i = 0; i < n && i < 5; ++i) bd[i] = board[i];
+    return a->debug_nested(n, bd, e1, e2, tab);
+    GUARD_END(-2)
+}
 DONK_API void* ds_abs_load(const char* path) {
     GUARD_BEGIN
     auto* a = new Abstraction();

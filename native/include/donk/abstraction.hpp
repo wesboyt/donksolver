@@ -1,13 +1,27 @@
 // abstraction.hpp -- card abstraction for hold'em.
 //
-//  preflop : the 169 isomorphic classes (lossless)
-//  flop    : percentile buckets of E[HS^2] over all turn+river runouts
-//  turn    : percentile buckets of E[HS^2] over all rivers
-//  river   : percentile buckets of HS
 // HS is the win+tie/2 probability against ONE uniformly random opponent
-// holding, with exact card removal. Percentile E[HS^2] bucketing is the
-// standard potential-aware-lite abstraction (Johanson et al. 2013). Board
-// texture is not part of the bucket key; that refinement is left for later.
+// holding, with exact card removal. Preflop is always the 169 isomorphic
+// classes (lossless). Two kinds of postflop buckets:
+//
+// percentile  one global ranking per street
+//   flop    : percentile buckets of E[HS^2] over all turn+river runouts
+//   turn    : percentile buckets of E[HS^2] over all rivers
+//   river   : percentile buckets of HS
+//   (Johanson et al. 2013). The board is not part of the bucket key.
+//
+// nested      buckets are relative to the board, and split by potential
+//   equity   e1 : turn  E_river[HS]          flop  E_turn[E_river[HS]]
+//   potential e2: turn  E_river[HS^2]        flop  E_turn[(E_river[HS])^2]
+//   flop, turn : on each board, N equal-WIDTH bins of e1 between the lowest
+//                and highest e1 any holding has on that board; then, inside
+//                each bin, K equal-width bins of e2 between the lowest and
+//                highest e2 in that bin. bucket = bin * K + sub-bin.
+//   river      : N equal-width bins of HS on [0, 1].
+//   Two holdings with the same equity but different draws land in different
+//   sub-bins, and "the top bin" always means the best holdings on THIS board.
+//   Optionally the bucket is also keyed by a board class (suit structure, or
+//   suit structure x high-card counts): bucket = class * (N * K) + the above.
 //
 // Flop and turn values are precomputed once per SUIT-ISOMORPHIC board
 // (1,755 flops, 16,432 turns) and stored as one byte per (board, holding).
@@ -42,6 +56,49 @@ static constexpr int MAXP_ABS = 8;
 #else
 #define DONK_NO_VECTOR
 #endif
+
+enum { ABS_PERCENTILE = 0, ABS_NESTED = 1 };
+enum { BOARDS_NONE = 0, BOARDS_SUITS = 1, BOARDS_TEXTURE = 2 };
+
+// ---- board classes ------------------------------------------------------------
+// Functions of the board as a SET of cards, invariant under suit permutations.
+// suits: the flush structure. flop: rainbow / two-tone / monotone; turn:
+// rainbow / one pair of a suit / two pairs of suits / three / four; river: no
+// flush possible / three / four / five of a suit.
+inline int suit_class(const int* board, int n) {
+    int c[4] = {0, 0, 0, 0};
+    for (int i = 0; i < n; ++i) c[card_suit(board[i])]++;
+    std::sort(c, c + 4, [](int a, int b) { return a > b; });
+    if (n == 3) return c[0] - 1;
+    if (n == 4) return c[0] == 4 ? 4 : c[0] == 3 ? 3 : (c[1] == 2 ? 2 : (c[0] == 2 ? 1 : 0));
+    return c[0] >= 5 ? 3 : c[0] == 4 ? 2 : c[0] == 3 ? 1 : 0;
+}
+inline int n_suit_classes(int n) { return n == 3 ? 3 : n == 4 ? 5 : 4; }
+// high cards: a = cards seven or higher, b = cards jack or higher (b <= a).
+inline int high_class(const int* board, int n) {
+    int a = 0, b = 0;
+    for (int i = 0; i < n; ++i) { a += card_rank(board[i]) >= 5; b += card_rank(board[i]) >= 9; }
+    return a * (a + 1) / 2 + b;
+}
+inline int n_high_classes(int n) { return (n + 1) * (n + 2) / 2; }
+inline int board_class(int mode, const int* board, int n) {
+    if (mode == BOARDS_NONE) return 0;
+    if (mode == BOARDS_SUITS) return suit_class(board, n);
+    return suit_class(board, n) * n_high_classes(n) + high_class(board, n);
+}
+inline int n_board_classes(int mode, int n) {
+    if (mode == BOARDS_NONE) return 1;
+    if (mode == BOARDS_SUITS) return n_suit_classes(n);
+    return n_suit_classes(n) * n_high_classes(n);
+}
+
+// Equal-width bin of v on [lo, hi]: the first k with v <= lo + (hi-lo)*k/B.
+inline int width_bin(double v, int B, double lo, double hi) {
+    double w = hi - lo + 1e-8;
+    for (int k = 1; k <= B; ++k)
+        if (v <= lo + w * ((double)k / B)) return k - 1;
+    return B - 1;
+}
 
 // ---- suit canonicalisation --------------------------------------------------
 struct Canon {
@@ -156,15 +213,25 @@ inline uint64_t fnv1a(const uint8_t* p, size_t n, uint64_t h = 14695981039346656
 
 class Abstraction {
 public:
-    int nb[4] = {169, 0, 0, 0};
+    int nb[4] = {169, 0, 0, 0};               // buckets per street, board classes included
+    int kind = ABS_PERCENTILE;
+    int sub = 1;                              // nested: potential sub-bins per equity bin (flop, turn)
+    int nbin[4] = {169, 0, 0, 0};             // nested: equity bins per street
+    int bmode[4] = {0, 0, 0, 0};              // nested: board class mode per street
+    int span[4] = {169, 0, 0, 0};             // buckets per board class
     std::vector<uint64_t> flop_keys, turn_keys;
     std::vector<uint32_t> flop_mult, turn_mult;
-    std::vector<uint8_t> flop_tab, turn_tab;  // n_boards x 1326
-    std::vector<float> river_thr;             // nb[3]-1 ascending
+    std::vector<uint8_t> flop_tab, turn_tab;  // n_boards x 1326, the bucket within the board class
+    std::vector<uint16_t> flop_cls, turn_cls; // board class per board (derived, not stored)
+    std::vector<float> river_thr;             // percentile: nb[3]-1 ascending
     uint64_t hash = 0;
 
     int flop_index(uint64_t key) const { return index_of(flop_keys, key); }
     int turn_index(uint64_t key) const { return index_of(turn_keys, key); }
+
+    // hi: the holding's index after the board's suit canonicalisation
+    int flop_bucket_at(int bi, int hi) const { return flop_cls[(size_t)bi] * span[1] + flop_tab[(size_t)bi * 1326 + hi]; }
+    int turn_bucket_at(int bi, int hi) const { return turn_cls[(size_t)bi] * span[2] + turn_tab[(size_t)bi * 1326 + hi]; }
 
     // bucket for a holding given the board prefix of that street
     int bucket(int street, int h0, int h1, const int* board) const {
@@ -173,17 +240,19 @@ public:
             int hole[1][2] = {{h0, h1}};
             double hs;
             hs_players(board, 1, hole, &hs);
-            return river_bucket(hs);
+            return river_bucket(board, hs);
         }
         Canon c = canonical_board(board, street == 1 ? 3 : 4);
         int bi = street == 1 ? flop_index(c.key) : turn_index(c.key);
         if (bi < 0) throw std::runtime_error("board not in abstraction");
         int hi = holding_index(c.map_card(h0), c.map_card(h1));
-        return street == 1 ? flop_tab[(size_t)bi * 1326 + hi] : turn_tab[(size_t)bi * 1326 + hi];
+        return street == 1 ? flop_bucket_at(bi, hi) : turn_bucket_at(bi, hi);
     }
 
-    int river_bucket(double hs) const {
-        return (int)(std::upper_bound(river_thr.begin(), river_thr.end(), (float)hs) - river_thr.begin());
+    int river_bucket(const int* board5, double hs) const {
+        if (kind == ABS_PERCENTILE)
+            return (int)(std::upper_bound(river_thr.begin(), river_thr.end(), (float)hs) - river_thr.begin());
+        return board_class(bmode[3], board5, 5) * span[3] + width_bin(hs, nbin[3], 0.0, 1.0 - 1e-8);
     }
 
     // ---- build ----------------------------------------------------------------
@@ -201,7 +270,59 @@ public:
         flop_tab = quantise(fv, flop_keys, flop_mult, nbf);
         turn_tab = quantise(tv, turn_keys, turn_mult, nbt);
         river_thresholds(nbr, river_boards, seed, threads, progress);
+        kind = ABS_PERCENTILE;
+        sub = 1;
+        for (int s = 1; s < 4; ++s) { nbin[s] = nb[s]; bmode[s] = BOARDS_NONE; }
+        derive();
         rehash();
+    }
+
+    // Nested buckets: nf/nt/nr equity bins, `sub_bins` potential sub-bins on the
+    // flop and turn, board class mode per street. Deterministic: every board is
+    // enumerated, nothing is sampled.
+    void build_nested(int nf, int nt, int nr, int sub_bins, int bf, int bt, int br, int threads,
+                      const std::function<void(const char*, double)>& progress) {
+        if (nf < 1 || nt < 1 || nr < 1 || sub_bins < 1 || nf * sub_bins > 255 || nt * sub_bins > 255 || nr > 255)
+            throw std::runtime_error("nested buckets: bins * sub-bins must be 1..255 per street");
+        int modes[3] = {bf, bt, br};
+        for (int m : modes)
+            if (m < BOARDS_NONE || m > BOARDS_TEXTURE) throw std::runtime_error("unknown board class mode");
+        kind = ABS_NESTED;
+        sub = sub_bins;
+        nbin[1] = nf; nbin[2] = nt; nbin[3] = nr;
+        bmode[1] = bf; bmode[2] = bt; bmode[3] = br;
+        threads = std::max(1, threads);
+        enumerate_iso(3, flop_keys, flop_mult);
+        enumerate_iso(4, turn_keys, turn_mult);
+        nested_street(3, flop_keys, flop_tab, nf, threads, progress);
+        nested_street(4, turn_keys, turn_tab, nt, threads, progress);
+        river_thr.clear();
+        derive();
+        if (nb[1] > 32767 || nb[2] > 32767 || nb[3] > 32767)
+            throw std::runtime_error("more than 32767 buckets on a street");
+        rehash();
+    }
+
+    // Everything that follows from the stored fields: spans, totals, board classes.
+    void derive() {
+        nb[0] = 169; span[0] = 169;
+        if (kind == ABS_PERCENTILE) {
+            for (int s = 1; s < 4; ++s) span[s] = nb[s];
+        } else {
+            span[1] = nbin[1] * sub; span[2] = nbin[2] * sub; span[3] = nbin[3];
+            for (int s = 1; s < 4; ++s) nb[s] = n_board_classes(bmode[s], s + 2) * span[s];
+        }
+        auto classes = [&](const std::vector<uint64_t>& keys, int n, int mode, std::vector<uint16_t>& out) {
+            out.assign(keys.size(), 0);
+            if (kind != ABS_NESTED || mode == BOARDS_NONE) return;
+            for (size_t i = 0; i < keys.size(); ++i) {
+                int bd[5];
+                key_cards(keys[i], bd);
+                out[i] = (uint16_t)board_class(mode, bd, n);
+            }
+        };
+        classes(flop_keys, 3, bmode[1], flop_cls);
+        classes(turn_keys, 4, bmode[2], turn_cls);
     }
 
     void rehash() {
@@ -211,6 +332,10 @@ public:
         h = fnv1a((const uint8_t*)turn_keys.data(), turn_keys.size() * 8, h);
         h = fnv1a(turn_tab.data(), turn_tab.size(), h);
         h = fnv1a((const uint8_t*)river_thr.data(), river_thr.size() * 4, h);
+        if (kind != ABS_PERCENTILE) {
+            int32_t p[9] = {kind, sub, nbin[1], nbin[2], nbin[3], bmode[1], bmode[2], bmode[3], 0};
+            h = fnv1a((const uint8_t*)p, sizeof(p), h);
+        }
         hash = h;
     }
 
@@ -219,7 +344,15 @@ public:
         FILE* f = std::fopen(path.c_str(), "wb");
         if (!f) throw std::runtime_error("cannot write " + path);
         auto W = [&](const void* p, size_t n) { if (n && std::fwrite(p, 1, n, f) != n) throw std::runtime_error("write failed"); };
-        W("DONKABS1", 8);
+        // Percentile files keep the first format, so their bytes and hashes
+        // (and every bundle made with them) do not change.
+        if (kind == ABS_PERCENTILE) {
+            W("DONKABS1", 8);
+        } else {
+            W("DONKABS2", 8);
+            int32_t p[8] = {kind, sub, nbin[1], nbin[2], nbin[3], bmode[1], bmode[2], bmode[3]};
+            W(p, sizeof(p));
+        }
         W(nb, sizeof(nb));
         auto vec = [&](const std::vector<uint64_t>& k, const std::vector<uint32_t>& m, const std::vector<uint8_t>& t) {
             uint64_t n = k.size();
@@ -239,7 +372,21 @@ public:
         auto R = [&](void* p, size_t n) { if (n && std::fread(p, 1, n, f) != n) throw std::runtime_error("truncated abstraction file"); };
         char magic[8];
         R(magic, 8);
-        if (std::memcmp(magic, "DONKABS1", 8)) throw std::runtime_error("not a donksolver abstraction file");
+        kind = ABS_PERCENTILE;
+        sub = 1;
+        if (!std::memcmp(magic, "DONKABS2", 8)) {
+            int32_t p[8];
+            R(p, sizeof(p));
+            kind = p[0]; sub = p[1];
+            nbin[1] = p[2]; nbin[2] = p[3]; nbin[3] = p[4];
+            bmode[1] = p[5]; bmode[2] = p[6]; bmode[3] = p[7];
+            if (kind != ABS_NESTED || sub < 1 || sub > 255) throw std::runtime_error("corrupt abstraction file");
+            for (int s = 1; s < 4; ++s)
+                if (nbin[s] < 1 || nbin[s] > 255 || bmode[s] < BOARDS_NONE || bmode[s] > BOARDS_TEXTURE)
+                    throw std::runtime_error("corrupt abstraction file");
+        } else if (std::memcmp(magic, "DONKABS1", 8)) {
+            throw std::runtime_error("not a donksolver abstraction file");
+        }
         R(nb, sizeof(nb));
         auto vec = [&](std::vector<uint64_t>& k, std::vector<uint32_t>& m, std::vector<uint8_t>& t) {
             uint64_t n;
@@ -258,6 +405,9 @@ public:
         uint64_t stored;
         R(&stored, 8);
         std::fclose(f);
+        if (kind == ABS_PERCENTILE)
+            for (int s = 1; s < 4; ++s) { nbin[s] = nb[s]; bmode[s] = BOARDS_NONE; }
+        derive();
         rehash();
         if (stored != hash) throw std::runtime_error("abstraction file checksum mismatch");
     }
@@ -276,6 +426,29 @@ public:
         std::memcpy(vals, v.data(), 1326 * sizeof(float));
         const auto& t = n == 3 ? flop_tab : turn_tab;
         std::memcpy(tab, &t[(size_t)bi * 1326], 1326);
+        return bi;
+    }
+
+    // Debug/audit, nested kind: e1, e2 and the stored bucket (without the board
+    // class) of every holding on `board` (n = 3 or 4), indexed by the ORIGINAL
+    // holding index; e1 < 0 marks holdings that share a card with the board.
+    int debug_nested(int n, const int* board, double* e1, double* e2, int32_t* tab) const {
+        Canon c = canonical_board(board, n);
+        const auto& keys = n == 3 ? flop_keys : turn_keys;
+        int bi = index_of(keys, c.key);
+        if (bi < 0) return -1;
+        int bd[5];
+        key_cards(c.key, bd);
+        NestedWork w;
+        std::vector<double> a(1326), b(1326);
+        street_metrics(n, bd, a.data(), b.data(), w);
+        const auto& t = n == 3 ? flop_tab : turn_tab;
+        const auto& H = holdings();
+        for (int h = 0; h < 1326; ++h) {
+            int ch = holding_index(c.map_card(H.lo[h]), c.map_card(H.hi[h]));
+            e1[h] = a[ch]; e2[h] = b[ch];
+            tab[h] = a[ch] < 0 ? -1 : t[(size_t)bi * 1326 + ch];
+        }
         return bi;
     }
 
@@ -355,6 +528,116 @@ private:
                 DONK_NO_VECTOR
                 for (int h = 0; h < 1326; ++h)
                     if (cnt[h]) row[h] = (float)(acc[h] / cnt[h]);
+                size_t d = done.fetch_add(1) + 1;
+                if (progress && (d % 64 == 0 || d == keys.size()))
+                    progress(n == 3 ? "flop" : "turn", (double)d / keys.size());
+            }
+        };
+        run_threads(threads, work);
+    }
+
+    // ---- nested kind ---------------------------------------------------------------
+    struct NestedWork {
+        HSWork hw;
+        std::vector<double> hs, sum, acc1, acc2;
+        std::vector<int> cnt, n;
+        NestedWork() : hs(1326), sum(52 * 1326), acc1(1326), acc2(1326), cnt(52 * 1326), n(1326) {}
+    };
+
+    // e1/e2 of every holding on the board bd[0..n) (see the file header);
+    // e1 = e2 = -1 for holdings that share a card with the board.
+    static void street_metrics(int n, int* bd, double* e1, double* e2, NestedWork& w) {
+        uint64_t dead = 0;
+        for (int i = 0; i < n; ++i) dead |= 1ULL << bd[i];
+        const auto& H = holdings();
+        if (n == 4) {
+            std::fill(w.acc1.begin(), w.acc1.end(), 0.0);
+            std::fill(w.acc2.begin(), w.acc2.end(), 0.0);
+            std::fill(w.n.begin(), w.n.end(), 0);
+            for (int r = 0; r < 52; ++r) {
+                if ((dead >> r) & 1) continue;
+                bd[4] = r;
+                std::fill(w.hs.begin(), w.hs.end(), -1.0);
+                hs_all(bd, w.hs.data(), nullptr, nullptr, w.hw);
+                for (int h = 0; h < 1326; ++h)
+                    if (w.hs[h] >= 0) { w.acc1[h] += w.hs[h]; w.acc2[h] += w.hs[h] * w.hs[h]; w.n[h]++; }
+            }
+            for (int h = 0; h < 1326; ++h) {
+                if (w.n[h]) { e1[h] = w.acc1[h] / w.n[h]; e2[h] = w.acc2[h] / w.n[h]; }
+                else { e1[h] = -1; e2[h] = -1; }
+            }
+            return;
+        }
+        // flop: every runout {t, r} is evaluated once and credited to both of
+        // its cards, so sum[t][h] / cnt[t][h] is the equity of h on turn t.
+        std::fill(w.sum.begin(), w.sum.end(), 0.0);
+        std::fill(w.cnt.begin(), w.cnt.end(), 0);
+        for (int t = 0; t < 52; ++t) {
+            if ((dead >> t) & 1) continue;
+            for (int r = t + 1; r < 52; ++r) {
+                if ((dead >> r) & 1) continue;
+                bd[3] = t; bd[4] = r;
+                std::fill(w.hs.begin(), w.hs.end(), -1.0);
+                hs_all(bd, w.hs.data(), nullptr, nullptr, w.hw);
+                double* st = &w.sum[(size_t)t * 1326];
+                double* sr = &w.sum[(size_t)r * 1326];
+                int* ct = &w.cnt[(size_t)t * 1326];
+                int* cr = &w.cnt[(size_t)r * 1326];
+                for (int h = 0; h < 1326; ++h)
+                    if (w.hs[h] >= 0) { st[h] += w.hs[h]; ct[h]++; sr[h] += w.hs[h]; cr[h]++; }
+            }
+        }
+        for (int h = 0; h < 1326; ++h) {
+            if (((dead >> H.lo[h]) & 1) || ((dead >> H.hi[h]) & 1)) { e1[h] = -1; e2[h] = -1; continue; }
+            double a = 0, b = 0;
+            int m = 0;
+            for (int t = 0; t < 52; ++t) {
+                int c = w.cnt[(size_t)t * 1326 + h];
+                if (!c) continue;
+                double et = w.sum[(size_t)t * 1326 + h] / c;
+                a += et; b += et * et; ++m;
+            }
+            e1[h] = a / m; e2[h] = b / m;
+        }
+    }
+
+    // The nested bucket of every holding on one board: equity bin, then the
+    // potential sub-bin inside that bin.
+    static void nested_row(const double* e1, const double* e2, int N, int K, uint8_t* row) {
+        double lo = 2, hi = -1;
+        for (int h = 0; h < 1326; ++h)
+            if (e1[h] >= 0) { lo = std::min(lo, e1[h]); hi = std::max(hi, e1[h]); }
+        int bin[1326];
+        std::vector<double> blo((size_t)N, 2.0), bhi((size_t)N, -1.0);
+        for (int h = 0; h < 1326; ++h) {
+            if (e1[h] < 0) { bin[h] = -1; continue; }
+            int k = width_bin(e1[h], N, lo, hi);
+            bin[h] = k;
+            blo[(size_t)k] = std::min(blo[(size_t)k], e2[h]);
+            bhi[(size_t)k] = std::max(bhi[(size_t)k], e2[h]);
+        }
+        for (int h = 0; h < 1326; ++h) {
+            if (bin[h] < 0) { row[h] = 0xFF; continue; }
+            int k = bin[h];
+            row[h] = (uint8_t)(k * K + width_bin(e2[h], K, blo[(size_t)k], bhi[(size_t)k]));
+        }
+    }
+
+    void nested_street(int n, const std::vector<uint64_t>& keys, std::vector<uint8_t>& tab, int N, int threads,
+                       const std::function<void(const char*, double)>& progress) {
+        tab.assign(keys.size() * 1326, 0xFF);
+        std::atomic<size_t> next{0}, done{0};
+        int K = sub;
+        auto work = [&]() {
+            NestedWork w;
+            std::vector<double> e1(1326), e2(1326);
+            for (;;) {
+                size_t bi = next.fetch_add(1);
+                if (bi >= keys.size()) break;
+                int bd[5];
+                key_cards(keys[bi], bd);
+                street_metrics(n, bd, e1.data(), e2.data(), w);
+                nested_row(e1.data(), e2.data(), N, K, &tab[bi * 1326]);
                 size_t d = done.fetch_add(1) + 1;
                 if (progress && (d % 64 == 0 || d == keys.size()))
                     progress(n == 3 ? "flop" : "turn", (double)d / keys.size());

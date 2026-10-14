@@ -6,7 +6,7 @@ Throughput and sizes were recorded on 2026-09-12 on an 8-thread, 16 GB laptop
 CPU using 2 threads while another job held the remaining cores, so they are
 lower bounds for an idle machine.
 
-## Audits: 62/62 checks pass (`tests/run_all.py`)
+## Audits: 83/83 checks pass (`tests/run_all.py`)
 
 | audit | result | negative control |
 |---|---|---|
@@ -14,13 +14,16 @@ lower bounds for an idle machine.
 | betting + payoff vs pokerfast FastHand | 67,998 steps and 6,000 hands (5,823 with side pots): 0 mismatches | preflop rake: 22 hands; exact split: 132 hands |
 | range deal law | chi2 = 150, df = 168, z = -1.01 | seat-only redraw: z = 293 |
 | abstraction | suit invariance exact on all streets; bucket mass 1.80-2.25% (target 2%); Spearman(bucket, river HS) 0.990 / 0.991 | hole-only permutation changes 630 / 401 / 82 |
-| chance-sampled regret (exact SE, 400k deals) | Leduc 2p chi2/df 0.865, 0.515; Leduc 3p 1.126, 0.998, 1.054 | no opponent reach: chi2/df > 4.6e5 |
+| nested abstraction | turn and flop e1, e2 == brute force over every runout (worst diff 4e-16); 50 boards re-binned here, 0 mismatches; board class x span exact on 2,000 flop/turn rows and 600 rivers; suit invariance exact on all streets | equal-mass bins: 44,058 holdings differ; sub-bins cut by equity: 19,337; class ignoring suits: 1,480 rows; hole-only permutation changes 520 / 349 / 67 |
+| potential sub-bins | on two-tone flops, flush draws sit 0.48 sub-bins above no-draw holdings of the same equity bin (per bin +1.13, +0.80, -0.49) | |
+| chance-sampled regret (exact SE, 400k deals) | Leduc 2p chi2/df 0.865, 0.515; Leduc 3p 1.126, 0.998, 1.054; max abs z 3.89 against a Bonferroni bound of 5.31 | no opponent reach: chi2/df > 4.6e5 |
 | sampled average | worst row error 0.268 -> 0.118 -> 0.045 at T = 4k/16k/64k | opponent-weighted: 0.71 / 0.95 / 0.76 |
 | convergence | Kuhn ev0 = -0.05557 (-1/18 = -0.05556); Leduc 2p LCFR slope -0.49/decade, NashConv at 1e6 = 0.022-0.027 | current strategy: slope -0.02 |
 | `linear_avg` vs `linear` | NashConv ratio at 1e6 = 3.58x (median of 3 seeds: 3.58, 3.22, 7.42) | |
 | Leduc 3p (coarse correlated sense) | max seat best-response gain 0.260 -> 0.048 | |
 | translation | 1,332 on-tree lines: 0 mismatches; pseudo-harmonic 0.3878 vs 0.3824 (se 0.0063); 3,656 served rows, 0 illegal | linear mapping 0.7647 rejected |
 | serving | first-to-act frequencies vs table chi2 z = 0.03; 1,500 mixed-seat hands, 0 illegal actions | permuted table z = 332 |
+| multiway postflop (3 players, 15bb, nested buckets) | full tree: 0 check-down terminals, 135 / 297 / 540 three-way flop / turn / river decision nodes; facing a bet three-way on the flop the weakest equity bin folds 68%, the strongest 30%; 1,500 hands, 5,352 rows, 0 illegal, 0 no_node | tree cut at two players: 7 check-down terminals, no three-way nodes, 261 no_node rows |
 
 The multi-threaded solves are not bit-reproducible, so the convergence and
 serving figures move a little from run to run.
@@ -66,8 +69,16 @@ postflop), desync 0%. Rates against other players will differ;
    flagged Leduc 3p at chi2/df 1.2-1.35 using SEs estimated from 40 batch
    means. Those are unreliable when entries depend on a few of the 1,680 deals.
    With the exact second moment, the same code gives 1.126 / 0.998 / 1.054.
-   The seat 0 z_chi of 3.94 is close to the threshold of 4; entries share
-   deals, so that statistic is only approximate.
+   **The second design was still wrong.** It compared chi2/df with a
+   chi-square quantile (z_chi < 4). Entries share deals, so the z values are
+   dependent and chi2/df is far wider than chi-square: on Leduc 3p seat 0 it
+   reads 1.126, 1.013, 1.059, 0.975, 1.415, 0.874 over six sampling seeds
+   (z_chi from -4.3 to +11.9), with mean 1.0 and no growth at four times the
+   samples (0.976, 0.866). The check passed on one platform at z_chi = 3.94
+   and failed on another at 4.09 with identical code. The test now requires
+   chi2/df < 2 (a bias adds N b^2, so this detects b > 0.0016 standard
+   deviations per entry at N = 400k) and keeps the Bonferroni bound on the
+   largest z, which is valid under any dependence.
 3. **The first pseudo-harmonic test design was wrong.** It read 4.9 SE off
    because rows repeated the same holdings, and the mapping coin is (by design)
    a function of what the acting seat knows. With independent rows it reads
@@ -77,6 +88,13 @@ postflop), desync 0%. Rates against other players will differ;
    hash, which identifies every policy made with it, are reproducible.
 5. The deal-law negative control could loop forever when a seat had no
    disjoint combo left. It is now bounded.
+6. **A statically linked libstdc++ crashed on Linux.** Built with
+   `-static-libstdc++` by gcc 13.3 on Ubuntu 24.04, every call that formatted
+   a number through `std::ostringstream` segfaulted inside libstdc++'s locale
+   code once the library was loaded with dlopen. The same source linked
+   dynamically passed, and an AddressSanitizer + UBSan build was clean, so the
+   fault is in the link mode and not in the solver. Linux now links libstdc++
+   dynamically.
 
 ## Not done
 
@@ -84,4 +102,7 @@ postflop), desync 0%. Rates against other players will differ;
   stability only.
 - The cost of serving unequal stacks from symmetric stack classes is not
   measured.
+- No 6-max multiway blueprint has been solved. The multiway audit is a
+  three-player, 15bb game.
+- Nested against percentile buckets at equal table size: not compared in play.
 - The Linux, macOS and Windows ARM64 builds are exercised by CI only.

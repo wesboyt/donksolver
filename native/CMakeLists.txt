@@ -57,10 +57,11 @@ elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   if(MINGW)
     # MinGW's C++ runtime and winpthread are not on a user's PATH.
     target_link_options(donksolver_core PRIVATE -static)
-  elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    # No dependency on the build image's libstdc++ version.
-    target_link_options(donksolver_core PRIVATE -static-libstdc++ -static-libgcc)
   endif()
+  # Linux links libstdc++ dynamically. A static libstdc++ inside a dlopen'ed
+  # library crashed in its iostream locale code (Ubuntu 24.04, gcc 13.3; see
+  # docs/RESULTS.md), and the manylinux images already keep the wheel within
+  # the libstdc++ every supported distribution has.
 endif()
 
 # scikit-build-core installs relative to the wheel's platlib root.

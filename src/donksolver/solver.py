@@ -11,23 +11,57 @@ from . import _native as N
 from .config import Game, Solve
 
 
+BOARD_MODES = ("none", "suits", "texture")
+
+
 class Abstraction:
-    """Card abstraction file (.dab): 169 preflop classes, E[HS^2] flop/turn, HS river."""
+    """Card abstraction file (.dab): 169 preflop classes plus postflop buckets.
+
+    kind="percentile": `buckets` per street, a global percentile ranking of
+    E[HS^2] (flop, turn) and HS (river).
+
+    kind="nested": on every flop and turn board, `buckets` equal-width equity
+    bins between that board's weakest and strongest holding, each split into
+    `sub` bins by potential; `buckets[2]` equal-width HS bins on the river.
+    `boards` adds a board class per street to the key ("none", "suits" = flush
+    structure, "texture" = flush structure x high-card counts).
+
+    `buckets` (the property) is the number of buckets per street as the solver
+    sees them, board classes and sub-bins included.
+    """
 
     def __init__(self, handle, path=None):
         self._h = handle
         self.path = path
 
     @classmethod
-    def build(cls, buckets=(50, 50, 50), threads=2, river_boards=20000, seed=1, progress=None):
+    def build(cls, buckets=(50, 50, 50), threads=2, river_boards=20000, seed=1, progress=None,
+              kind="percentile", sub=4, boards=("none", "none", "none")):
         def _p(stage, frac):
             if progress:
                 progress(stage.decode(), frac)
         cb = N.PROGRESS(_p)
-        h = N.lib.ds_abs_build(int(buckets[0]), int(buckets[1]), int(buckets[2]), int(threads),
-                               int(river_boards), int(seed), cb)
+        if kind == "percentile":
+            h = N.lib.ds_abs_build(int(buckets[0]), int(buckets[1]), int(buckets[2]), int(threads),
+                                   int(river_boards), int(seed), cb)
+        elif kind == "nested":
+            if isinstance(boards, str):
+                boards = (boards,) * 3
+            bm = [BOARD_MODES.index(b) for b in boards]
+            h = N.lib.ds_abs_build_nested(int(buckets[0]), int(buckets[1]), int(buckets[2]), int(sub),
+                                          bm[0], bm[1], bm[2], int(threads), cb)
+        else:
+            raise ValueError("kind must be 'percentile' or 'nested'")
         N.check(h)
         return cls(h)
+
+    @property
+    def params(self):
+        """How the file was built: kind, sub-bins, bins and board mode per street."""
+        out = (C.c_int32 * 8)()
+        N.lib.ds_abs_params(self._h, out)
+        return {"kind": ("percentile", "nested")[out[0]], "sub": out[1], "bins": list(out[2:5]),
+                "boards": [BOARD_MODES[m] for m in out[5:8]]}
 
     @classmethod
     def load(cls, path):

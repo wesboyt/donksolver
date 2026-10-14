@@ -179,8 +179,8 @@ public:
             d.hole[p][0] = (int8_t)a; d.hole[p][1] = (int8_t)b;
             d.value[p] = eval_mask(bm | sbit(a) | sbit(b));
             d.bucket[p][0] = (int16_t)preflop_class(a, b);
-            d.bucket[p][1] = A.flop_tab[(size_t)fi * 1326 + holding_index(cf.map_card(a), cf.map_card(b))];
-            d.bucket[p][2] = A.turn_tab[(size_t)ti * 1326 + holding_index(ct.map_card(a), ct.map_card(b))];
+            d.bucket[p][1] = (int16_t)A.flop_bucket_at(fi, holding_index(cf.map_card(a), cf.map_card(b)));
+            d.bucket[p][2] = (int16_t)A.turn_bucket_at(ti, holding_index(ct.map_card(a), ct.map_card(b)));
             d.bucket[p][3] = -1;
         }
         d.river_ready = false;
@@ -199,7 +199,7 @@ private:
         for (int p = 0; p < cfg_.n; ++p) { hole[p][0] = d.hole[p][0]; hole[p][1] = d.hole[p][1]; }
         double hs[MAXP];
         hs_players(bd, cfg_.n, hole, hs);
-        for (int p = 0; p < cfg_.n; ++p) d.bucket[p][3] = (int16_t)abs_->river_bucket(hs[p]);
+        for (int p = 0; p < cfg_.n; ++p) d.bucket[p][3] = (int16_t)abs_->river_bucket(bd, hs[p]);
         d.river_ready = true;
     }
     NLConfig cfg_;

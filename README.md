@@ -23,7 +23,7 @@ exploitability is available for the validation games (Kuhn, Leduc) only.
 
 ```bash
 donksolver abstraction --buckets 50,50,50 --threads 2 --out abs.dab      # about a minute
-donksolver size  --preset 6max-lite --stack-bb 100
+donksolver size  --preset 6max-lite --stack-bb 100 --abstraction abs.dab
 donksolver solve --preset 6max-lite --stack-bb 100 --abstraction abs.dab \
     --iterations 50000000 --threads 6 --out runs/6max-lite_100bb          # resumable (state.bin)
 donksolver bundle --abstraction abs.dab --out runs/bundle.json runs/*/policy.dpol
@@ -49,6 +49,57 @@ b = Bundle("runs/bundle.json")
 out = b.act(stacks, blinds, hole, board, histories, uniforms)   # kind/chips/prob/status per row
 ```
 
+## Card abstraction
+
+Preflop is always the 169 isomorphic classes. Postflop there are two kinds,
+chosen when the abstraction file is built; a solve reads the bucket counts
+from the file.
+
+**percentile** (default). One global ranking per street: percentile buckets of
+E[HS^2] on the flop and turn and of HS on the river (Johanson et al. 2013). The
+board is not part of the key.
+
+**nested**. Buckets are relative to the board and split by potential:
+
+```bash
+donksolver abstraction --kind nested --buckets 12,12,24 --sub 4 --boards none --out nested.dab
+```
+
+- `e1` is the equity: `E_river[HS]` on the turn, `E_turn[E_river[HS]]` on the flop.
+- `e2` is the potential: `E_river[HS^2]` on the turn, `E_turn[(E_river[HS])^2]`
+  on the flop. Two holdings with the same equity differ in `e2` when one of
+  them gets there by drawing.
+- On each flop and each turn, holdings fall into N equal-width bins of `e1`
+  between the weakest and strongest holding on that board, and each bin is
+  split into `--sub` equal-width bins of `e2`. The river uses N equal-width
+  bins of HS.
+- `--boards` adds a board class to the key, per street (`none`, `suits`, or
+  `texture`; one value or `flop,turn,river`). `suits` is the flush structure
+  (3 flop, 5 turn, 4 river classes). `texture` multiplies it by the counts of
+  cards seven-or-higher and jack-or-higher (30 / 75 / 84 classes).
+
+Buckets per street are `classes x N x sub` (river: `classes x N`), so
+`12,12,24` with `--sub 4` and no board classes is 48 / 48 / 24, and the same
+with `--boards texture` is 1,440 / 3,600 / 2,016. Nothing is sampled, so the
+file is a deterministic function of its parameters. It builds in about 30 s on
+4 threads.
+
+## Multiway postflop
+
+`postflop_max_players` is the number of players that may see a flop before the
+tree ends in a check-down leaf. The `6max-lite` and `6max` presets set it to 2
+to keep the tables small. Set it to the number of players (preset `6max-mw`, or
+`--postflop-max-players 6`) and every flop is played out with the multiway
+menus (`mw_menus`, `mw_max_raises`); nothing then comes back `no_node` for
+being multiway. The cost is memory:
+
+| 6max-lite menus, 50/50/50 buckets | 2 | 3 | 4 | 6 players postflop |
+|---|---|---|---|---|
+| 40bb, tables (double) | 0.4 GB | 0.9 GB | 1.9 GB | 3.7 GB |
+| 100bb, tables (double) | 1.5 GB | 3.6 GB | 8.1 GB | 17.9 GB |
+
+`precision=float` halves these.
+
 ## Serving real states
 
 A bundle holds one card abstraction and one policy per stack class. For each
@@ -63,7 +114,8 @@ row `Bundle.act`:
    uniform, and converts the abstract action back to chips.
 
 Every row reports a status: `ok`, `offtree` (translated, still served),
-`no_node` (the abstraction has no node here, such as multiway postflop),
+`no_node` (the tree has no node here, such as a multiway flop in a tree cut
+by `postflop_max_players`),
 `desync`, `bad_input`. Rows at `no_node` and above carry no usable action; the
 caller decides what plays them.
 
@@ -89,7 +141,7 @@ native/include/donk/   header-only C++17 core
   cards.hpp            card ids, 7-card evaluator, RNG
   betting.hpp          no-limit betting rules, side pots, rake
   tree.hpp             abstract trees: no-limit menu builder, fixed-limit builder
-  abstraction.hpp      169 preflop classes; flop/turn E[HS^2] percentile buckets; river HS
+  abstraction.hpp      169 preflop classes; percentile or nested (equity x potential) buckets
   games.hpp            Kuhn / Leduc (validation) / NLHE games; range deal sampler
   solver.hpp           MCCFR: es / cs traversal, linear | linear_avg | vanilla weighting
   policy.hpp           frozen policy files, stack-class bundles, translation, batch act
@@ -110,7 +162,7 @@ tests/                 audits (each with a negative control); pytest or run_all.
 | weighting | `linear` (regrets and average weighted by t; Linear CFR, Brown & Sandholm 2019), default; `linear_avg` (uniform regrets, t-weighted average); `vanilla` | `linear_avg` has no proven bound and measured about 3.6x worse on Leduc |
 | average | `avg_mode=weighted` (own reach, opponents full width) or `sampled` (own action sampled, as in Pluribus), each run with probability `p_avg` per iteration | both are consistent, audited |
 | doneness | root EV per chunk with a standard error, one seat per deal | iterations per node is logged, but it is a budget and not a regret bound |
-| cards | 169 preflop classes; E[HS^2] percentiles on flop and turn; HS percentiles on the river (Johanson et al. 2013) | imperfect recall |
+| cards | 169 preflop classes; percentile buckets, or per-board equity bins split by potential, optionally keyed by a board class | imperfect recall |
 | threads | shared tables, striped spinlocks on writes; `hogwild=1` drops them | |
 
 The betting rules are pokerkit's cash-game no-limit semantics, checked step by
@@ -150,7 +202,7 @@ must re-run `tests/audit_abstraction.py`.
 `pytest`, or `python tests/run_all.py`. Every check that could pass vacuously
 has a negative control: a deliberately broken variant that must be detected.
 The card abstraction and two small solved policies are built on first use and
-cached under `artifacts/` (about two minutes).
+cached under `artifacts/` (about three minutes).
 
 | audit | what | control |
 |---|---|---|
@@ -158,11 +210,13 @@ cached under `artifacts/` (about two minutes).
 | audit_payoff | replay == pokerfast FastHand at every step; settlement + rake == FastHand + pokerfast.rake | rake preflop; exact splits |
 | audit_deal_law | range sampler law, chi-square vs enumeration | seat-only redraw |
 | audit_abstraction | river HS exact; suit isomorphism lossless; bucket mass; buckets predict strength | hole-only suit permutation |
+| audit_nested | nested e1/e2 == brute force; bucket == the nested rule; board classes; suit isomorphism; draws sit in higher sub-bins | equal-mass bins; sub-bins cut by equity; class ignoring suits; hole-only permutation |
 | audit_cs_regret | chance-sampled regret is unbiased, Leduc 2p/3p, exact SE | no opponent reach |
 | audit_average | sampled average -> exact linear average | opponent-weighted average |
 | audit_convergence | Kuhn value -1/18; Leduc LCFR O(1/sqrt T); `linear_avg` not better; 3p gains fall | current strategy (no average) |
 | audit_translation | on-tree round trip; pseudo-harmonic frequency; legality in FastHand | linear mapping |
 | audit_serving | served frequencies == table; mixed-seat hands; throughput | permuted table |
+| audit_multiway | three-way flop/turn/river nodes exist, are solved and are served with no `no_node` | tree cut at two players |
 
 ## Measured
 
@@ -179,12 +233,17 @@ of a laptop CPU:
 - **Stack classes are symmetric.** A state with unequal stacks is served by the
   class nearest the actor's effective stack, and real sizes are translated by
   pot fraction. The cost of that translation is not measured.
-- **Multiway postflop is not solved.** When more than `postflop_max_players`
-  (default 2) see a flop, the tree ends in a check-down leaf. That biases
-  preflop values toward position-less equity, and those states come back
-  `no_node` in serving.
-- **The abstraction has imperfect recall.** Flop and turn buckets are E[HS^2]
-  percentiles, not potential-aware or texture buckets.
+- **Multiway postflop costs memory.** The `6max-lite` and `6max` presets cut
+  the tree when more than two players see a flop: the leaf is a check-down,
+  which biases preflop values toward position-less equity, and those states
+  come back `no_node` in serving. `6max-mw` plays every flop out, at about ten
+  times the table size. No multiway blueprint has been solved and measured
+  yet; the audit covers a three-player game.
+- **The abstraction has imperfect recall** in both kinds: each street's bucket
+  is looked up independently of the previous street's.
+- **Nested buckets are equal-width, not equal-mass.** Some buckets hold few
+  holdings and converge slowly. Which kind plays better at a given table size
+  has not been measured.
 - **No NLHE best response.** For hold'em, doneness is root-EV stability only.
 - `precision=float` halves table memory but loses increments once a row sees
   about 1e7 visits under linear weighting. The default is double.
