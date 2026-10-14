@@ -18,12 +18,12 @@ lower bounds for an idle machine.
 | potential sub-bins | on two-tone flops, flush draws sit 0.48 sub-bins above no-draw holdings of the same equity bin (per bin +1.13, +0.80, -0.49) | |
 | chance-sampled regret (exact SE, 400k deals) | Leduc 2p chi2/df 0.865, 0.515; Leduc 3p 1.126, 0.998, 1.054; max abs z 3.89 against a Bonferroni bound of 5.31 | no opponent reach: chi2/df > 4.6e5 |
 | sampled average | worst row error 0.268 -> 0.118 -> 0.045 at T = 4k/16k/64k | opponent-weighted: 0.71 / 0.95 / 0.76 |
-| convergence | Kuhn ev0 = -0.05557 (-1/18 = -0.05556); Leduc 2p LCFR slope -0.49/decade, NashConv at 1e6 = 0.022-0.027 | current strategy: slope -0.02 |
+| convergence | Kuhn at 4e6 iterations ev0 = -0.05556 (-1/18), NashConv 0.0006; Leduc 2p LCFR slope -0.49/decade, NashConv at 1e6 = 0.022-0.027 | current strategy: slope -0.02 |
 | `linear_avg` vs `linear` | NashConv ratio at 1e6 = 3.58x (median of 3 seeds: 3.58, 3.22, 7.42) | |
 | Leduc 3p (coarse correlated sense) | max seat best-response gain 0.260 -> 0.048 | |
 | translation | 1,332 on-tree lines: 0 mismatches; pseudo-harmonic 0.3878 vs 0.3824 (se 0.0063); 3,656 served rows, 0 illegal | linear mapping 0.7647 rejected |
 | serving | first-to-act frequencies vs table chi2 z = 0.03; 1,500 mixed-seat hands, 0 illegal actions | permuted table z = 332 |
-| multiway postflop (3 players, 15bb, nested buckets) | full tree: 0 check-down terminals, 135 / 297 / 540 three-way flop / turn / river decision nodes; facing a bet three-way on the flop the weakest equity bin folds 68%, the strongest 30%; 1,500 hands, 5,352 rows, 0 illegal, 0 no_node | tree cut at two players: 7 check-down terminals, no three-way nodes, 261 no_node rows |
+| multiway postflop (3 players, 15bb, nested buckets) | full tree: 0 check-down terminals, 135 / 297 / 540 three-way flop / turn / river decision nodes; facing a bet three-way on the flop the weakest equity bin folds 68%, the strongest 30%; 1,500 hands, 14,505 served rows (2,489 / 2,290 / 1,696 of them three-way on the flop / turn / river), 0 illegal, 0 no_node | tree cut at two players: 7 check-down terminals, no three-way nodes, 7,362 no_node rows |
 
 The multi-threaded solves are not bit-reproducible, so the convergence and
 serving figures move a little from run to run.
@@ -88,7 +88,15 @@ postflop), desync 0%. Rates against other players will differ;
    hash, which identifies every policy made with it, are reproducible.
 5. The deal-law negative control could loop forever when a seat had no
    disjoint combo left. It is now bounded.
-6. **A statically linked libstdc++ crashed on Linux.** Built with
+6. **Two audit thresholds sat inside the run-to-run spread.** Kuhn NashConv
+   was checked against 0.005 at 2e5 iterations, where 16 runs (8 seeds, 1 and
+   2 threads) gave up to 0.0054; it failed on two CI machines. At 4e6
+   iterations the same 16 runs give at most 0.0012, and the audit now runs
+   there. The first multiway audit required a three-way river row from the
+   solved policy's own play, which produced 0 to 3 of them in 1,500 hands; it
+   now mixes in checks and calls so that thousands of three-way rows are
+   served on every street.
+7. **A statically linked libstdc++ crashed on Linux.** Built with
    `-static-libstdc++` by gcc 13.3 on Ubuntu 24.04, every call that formatted
    a number through `std::ostringstream` segfaulted inside libstdc++'s locale
    code once the library was loaded with dlopen. The same source linked

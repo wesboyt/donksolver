@@ -1,6 +1,9 @@
 """Convergence on the validation games (exact best responses, all deals enumerated).
 
   1. Kuhn 2p: the average profile's value for seat 0 -> -1/18 and NashConv -> 0.
+     4e6 iterations: over 16 runs (8 seeds, 1 and 2 threads) NashConv was at
+     most 0.0012 there, against 0.0054 at 2e5, which the bound of 0.005 cannot
+     separate from a failure.
   2. Leduc 2p, LCFR (es): NashConv falls at least like 1/sqrt(T) (log-log slope
      <= -0.4 per decade over 1e4 -> 1e6, median of 3 seeds).
   3. linear_avg weighting (uniform regrets, linear average) is not better than
@@ -30,7 +33,7 @@ def curve(game, players, weighting, avg, seed, sched, threads):
 
 def main():
     th = T.THREADS
-    k = curve("kuhn", 2, "linear", "weighted", 1, (200000,), th)[-1]
+    k = curve("kuhn", 2, "linear", "weighted", 1, (4000000,), th)[-1]
     T.check("kuhn value -> -1/18", abs(k["ev"][0] + 1 / 18) < 2e-3, "ev0=%.5f" % k["ev"][0])
     T.check("kuhn nashconv small", k["nashconv"] < 5e-3, "nashconv=%.5f" % k["nashconv"])
 

@@ -9,9 +9,12 @@ with postflop_max_players=2 (a three-way flop ends in a check-down leaf).
   2. the three-way nodes are solved, not just present: facing a bet three-way
      on the flop, the weakest equity bin folds more than the strongest one
   3. whole three-handed hands on pokerfast's FastHand with every seat served:
-     every action is legal and no row comes back no_node, including rows
-     where three players are still in on the flop, turn and river
-     control: the cut tree's policy returns no_node on the same kind of hands
+     every served action is legal and no row comes back no_node, including
+     rows where three players are still in on the flop, turn and river. The
+     solved policy rarely takes three players to the river, so the played
+     action is the served one only 30% of the time and a check or call
+     otherwise; every decision is still a served row.
+     control: the cut tree's policy returns no_node on the same hands
 """
 import os
 import random
@@ -87,7 +90,9 @@ def play(man, hands, rng):
                      or (a == "allin" and (("min_bet" in sp and c == sp["max_bet"]) or
                                            ("min_bet" not in sp and "call" in sp and c == sp["call"]))))
             illegal += not legal
-            if a == "fold":
+            if rng.random() < 0.7:
+                h.call() if "call" in sp else h.check()
+            elif a == "fold":
                 h.fold()
             elif a == "check":
                 h.check()
@@ -132,7 +137,7 @@ def main():
 
     rng = random.Random(41)
     rows, illegal, no_node, tw = play(man_full, 1500, rng)
-    T.check("three-handed hands: every action legal, no no_node rows", illegal == 0 and no_node == 0 and min(tw[1:]) > 0,
+    T.check("three-handed hands: every action legal, no no_node rows", illegal == 0 and no_node == 0 and min(tw[1:]) >= 100,
             "rows=%d illegal=%d no_node=%d three-way rows flop/turn/river=%s" % (rows, illegal, no_node, tw[1:]))
     rows_c, _, no_node_c, _ = play(man_cut, 1500, rng)
     T.control("cut tree's policy returns no_node on three-way flops", no_node_c > 0,
